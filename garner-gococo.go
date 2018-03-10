@@ -46,6 +46,9 @@ import (
 
 	tf "github.com/tensorflow/tensorflow/tensorflow/go"
 	"github.com/tensorflow/tensorflow/tensorflow/go/op"
+	"net/http"
+	"io"
+	"crypto/tls"
 )
 
 // Global labels array
@@ -166,44 +169,38 @@ func addLabel(img *image.RGBA, x, y, class int, label string) {
 	d.DrawString(label)
 }
 
-func main() {
-	// Parse flags
-	modeldir := flag.String("dir", "", "Directory containing COCO trained model files. Assumes model file is called frozen_inference_graph.pb")
-	jpgfile := flag.String("jpg", "", "Path of a JPG image to use for input")
-	outjpg := flag.String("out", "output.jpg", "Path of output JPG for displaying labels. Default is output.jpg")
-	labelfile := flag.String("labels", "labels.txt", "Path to file of COCO labels, one per line")
-	flag.Parse()
-	if *modeldir == "" || *jpgfile == "" {
-		flag.Usage()
-		return
+var psession *tf.Session
+var pgraph *tf.Graph
+var outjpg string = "output.jpg"
+
+
+func download(URL, filename string) error {
+	// Not pretty, but we have a self signed cert.
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 	}
+	client := &http.Client{Transport: tr}
 
-	// Load the labels
-	loadLabels(*labelfile)
-
-	// Load a frozen graph to use for queries
-
-	modelpath := filepath.Join(*modeldir, "frozen_inference_graph.pb")
-	model, err := ioutil.ReadFile(modelpath)
+	resp, err := client.Get(URL)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
-
-	// Construct an in-memory graph from the serialized form.
-	graph := tf.NewGraph()
-	if err := graph.Import(model, ""); err != nil {
-		log.Fatal(err)
-	}
-
-	// Create a session for inference over graph.
-	session, err := tf.NewSession(graph, nil)
+	defer resp.Body.Close()
+	file, err := os.OpenFile(filename, os.O_RDWR|os.O_CREATE, 0644)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
-	defer session.Close()
+	defer file.Close()
+	_, err = io.Copy(file, resp.Body)
+	return err
+}
 
+func runClassifier(jpgfile string, outjpg string) {
+	graph := pgraph
+	log.Println("jpgfile: ", jpgfile)
+	log.Println("outjpg: ", outjpg)
 	// DecodeJpeg uses a scalar String-valued tensor as input.
-	tensor, i, err := makeTensorFromImage(*jpgfile)
+	tensor, i, err := makeTensorFromImage(jpgfile)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -222,7 +219,7 @@ func main() {
 	o4 := graph.Operation("num_detections")
 
 	// Execute COCO Graph
-	output, err := session.Run(
+	output, err := psession.Run(
 		map[tf.Output]*tf.Tensor{
 			inputop.Output(0): tensor,
 		},
@@ -259,7 +256,7 @@ func main() {
 	}
 
 	// Output JPG file
-	outfile, err := os.Create(*outjpg)
+	outfile, err := os.Create(outjpg)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -273,3 +270,152 @@ func main() {
 		log.Fatal(err)
 	}
 }
+
+func bytehandler(w http.ResponseWriter, r *http.Request) {
+	log.Println("In Classifier.")
+	var url string
+	if (r.Method == "POST") {
+		r.ParseForm()
+		// The file to classify:
+		log.Println("Classify this: ")
+		url = r.Form.Get("filename") // yes, not safe.
+		log.Println(r.Form.Get("filename"))
+
+		// FIXME: Retrieve file, should just copy request body bytes directy to tensorflow input.
+		err := download(url, "tmpFile.jpg") // Session key would be nice to prepend.
+		if err != nil {
+			return
+		}
+	} else {
+		return
+	}
+
+	// Run classifier, which writes to ouptut.jpg
+	runClassifier("tmpFile.jpg", "output.jpg")
+
+
+	// Open output.
+	var reader io.Reader
+	var err error
+	reader, err = os.Open("output.jpg")
+	b, err := ioutil.ReadAll(reader) // Hmm. Should IO stream it.
+	if (err != nil) {
+		log.Println("In Classifier. No output!")
+		return // Nothing to do.
+	}
+	// Write byte output.
+
+
+	//w.Header().Set("Content-Type", "image/jpeg")
+	log.Println("Size of file: %d", len(b))
+	//w.Header().Set("Content-Length", strconv.Itoa(len(b)))
+	if _, err := w.Write(b); err != nil {
+		log.Println("unable to write image.")
+	}
+	log.Println("In Classifier. Written!")
+
+}
+
+var httpAddr = flag.String("http", ":8081", "Listen address")
+func launchHTTPListeners() {
+
+	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { // Sorta dangerous with (fake) certs here.
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		pusher, ok := w.(http.Pusher)
+		if ok {
+
+			// Push is supported. Try pushing rather than
+			// waiting for the browser request these static assets.
+			if err := pusher.Push("/static", nil); err != nil {
+				log.Printf("Failed to push: %v", err)
+			}
+			if err := pusher.Push("/static/style.css", nil); err != nil {
+				log.Printf("Failed to push: %v", err)
+			}
+		}
+		fmt.Fprintf(w, indexHTML)
+	})
+
+	// TODO: Grab any client given image from web, then just post as a webservice.
+	http.HandleFunc("/dyn/classify", bytehandler)
+
+	// Https seems to be needed for pusher by browser standard.
+	log.Fatal(http.ListenAndServeTLS(*httpAddr, "certs/cert.pem", "certs/key.pem", nil))
+}
+
+func main() {
+	// Parse flags
+
+	modeldir := flag.String("dir", "", "Directory containing COCO trained model files. Assumes model file is called frozen_inference_graph.pb")
+	jpgfile := flag.String("jpg", "", "Path of a JPG image to use for input")
+	labelfile := flag.String("labels", "labels.txt", "Path to file of COCO labels, one per line")
+	flag.Parse()
+	if *modeldir == "" || *jpgfile == "" {
+		flag.Usage()
+		return
+	}
+
+	// Load the labels
+	loadLabels(*labelfile)
+
+	// Load a frozen graph to use for queries
+
+	modelpath := filepath.Join(*modeldir, "frozen_inference_graph.pb")
+	model, err := ioutil.ReadFile(modelpath)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Construct an in-memory graph from the serialized form.
+	graph := tf.NewGraph()
+	pgraph = graph // Keep a live pointer to reuse.
+	if err := pgraph.Import(model, ""); err != nil {
+		log.Fatal(err)
+	}
+
+	// Create a session for inference over graph.
+	session, err := tf.NewSession(graph, nil)
+	psession = session // Keep a live pointer to reuse.
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close()
+
+	//runClassifier(*jpgfile, "output.jpg")
+	launchHTTPListeners()
+
+}
+
+
+const indexHTML = `<html>
+<head>
+	<title>Hello World</title>
+	<script src="/static/app.js"></script>
+	<link rel="stylesheet" href="/static/style.css"">
+</head>
+<body onload = "startTimer()">
+	<form>
+    <input id="urlsrc" type="text" name="imgurl" value="">
+    <button type="button" onclick="submitForClassification('urlsrc', 'classifiedimg')">Classify This Image</button>
+	</form>
+    <button type="button" onclick="submitForClassification('srcimg', 'classifiedimg')">Classify This Image</button>
+	<div></div>
+    <button type="button" onclick="displayPreviousImage()">Previous</button>
+    <button type="button" onclick="displayNextImage()">Next</button>
+	<div id="htmlimgsrc">
+    	<img id="srcimg" src="/static/pexels-photo-179124.jpeg"/>
+	</div>
+
+	<div id="htmlimgclassfied">
+    	<img id="classifiedimg" src="/output.jpg"/>
+	</div>
+    
+
+</body>
+
+</html>
+`
