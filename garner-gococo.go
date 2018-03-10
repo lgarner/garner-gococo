@@ -400,17 +400,14 @@ const indexHTML = `<html>
 <body onload = "startTimer()">
 	<form>
     <input id="urlsrc" type="text" name="imgurl" value="">
-    <button type="button" onclick="submitForClassification('urlsrc', 'classifiedimg')">Classify This Image</button>
+    <button type="button" onclick="submitForClassificationUrl('urlsrc', 'classifiedimg')">Classify This Image</button>
 	</form>
     <button type="button" onclick="submitForClassification('srcimg', 'classifiedimg')">Classify This Image</button>
 	<div></div>
     <button type="button" onclick="displayPreviousImage()">Previous</button>
     <button type="button" onclick="displayNextImage()">Next</button>
-	<div id="htmlimgsrc">
+	<div id="htmlimg">
     	<img id="srcimg" src="/static/pexels-photo-179124.jpeg"/>
-	</div>
-
-	<div id="htmlimgclassfied">
     	<img id="classifiedimg" src="/output.jpg"/>
 	</div>
     
