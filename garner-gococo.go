@@ -49,6 +49,7 @@ import (
 	"net/http"
 	"io"
 	"crypto/tls"
+	"strconv"
 )
 
 // Global labels array
@@ -271,9 +272,13 @@ func runClassifier(jpgfile string, outjpg string) {
 	}
 }
 
+var MAX_CLIENTS int
+var urlClassifyChannel chan struct{}
+
 func bytehandler(w http.ResponseWriter, r *http.Request) {
 	log.Println("In Classifier.")
 	var url string
+
 	if (r.Method == "POST") {
 		r.ParseForm()
 		// The file to classify:
@@ -289,6 +294,9 @@ func bytehandler(w http.ResponseWriter, r *http.Request) {
 	} else {
 		return
 	}
+	// Block until channel frees (via defer). Seems strange, but it's a counting semaphore.
+	urlClassifyChannel <- struct{}{}
+	defer func() { <-urlClassifyChannel }()
 
 	// Run classifier, which writes to ouptut.jpg
 	runClassifier("tmpFile.jpg", "output.jpg")
@@ -349,10 +357,16 @@ func launchHTTPListeners() {
 
 func main() {
 	// Parse flags
-
+	var err error
 	modeldir := flag.String("dir", "", "Directory containing COCO trained model files. Assumes model file is called frozen_inference_graph.pb")
 	jpgfile := flag.String("jpg", "", "Path of a JPG image to use for input")
 	labelfile := flag.String("labels", "labels.txt", "Path to file of COCO labels, one per line")
+	maxRequests := flag.String("maxrequests", "100", "Max number of requests")
+	MAX_CLIENTS, err = strconv.Atoi(*maxRequests)
+	if (MAX_CLIENTS < 1 || err != nil) {
+		flag.Usage()
+		return
+	}
 	flag.Parse()
 	if *modeldir == "" || *jpgfile == "" {
 		flag.Usage()
@@ -361,6 +375,7 @@ func main() {
 
 	// Load the labels
 	loadLabels(*labelfile)
+	urlClassifyChannel = make(chan struct{}, MAX_CLIENTS)
 
 	// Load a frozen graph to use for queries
 
