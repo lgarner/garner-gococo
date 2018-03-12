@@ -82,18 +82,11 @@ func Rect(img *image.RGBA, x1, y1, x2, y2, width int, col color.Color) {
 }
 
 // TENSOR UTILITY FUNCTIONS
-func makeTensorFromImage(filename string) (*tf.Tensor, image.Image, error) {
-	b, err := ioutil.ReadFile(filename)
-	if err != nil {
-		return nil, nil, err
-	}
+func makeTensorFromImageBytes(jpgfilebytes []byte) (*tf.Tensor, image.Image, error) {
+	b := jpgfilebytes
 
 	r := bytes.NewReader(b)
 	img, _, err := image.Decode(r)
-
-	if err != nil {
-		return nil, nil, err
-	}
 
 	// DecodeJpeg uses a scalar String-valued tensor as input.
 	tensor, err := tf.NewTensor(string(b))
@@ -196,12 +189,31 @@ func download(URL, filename string) error {
 	return err
 }
 
-func runClassifier(jpgfile string, outjpg string) {
+func downloadBytes(URL string) ([]byte, error) {
+	// Not pretty, but we have a self signed cert.
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+	client := &http.Client{Transport: tr}
+
+	resp, err := client.Get(URL)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	b, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	return b, err
+}
+
+func runClassifierBytes(jpgbytes []byte, outjpg string) {
 	graph := pgraph
-	log.Println("jpgfile: ", jpgfile)
 	log.Println("outjpg: ", outjpg)
 	// DecodeJpeg uses a scalar String-valued tensor as input.
-	tensor, i, err := makeTensorFromImage(jpgfile)
+	tensor, i, err := makeTensorFromImageBytes(jpgbytes)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -278,6 +290,8 @@ var urlClassifyChannel chan struct{}
 func bytehandler(w http.ResponseWriter, r *http.Request) {
 	log.Println("In Classifier.")
 	var url string
+	var jpegBytes []byte
+	var err error
 
 	if (r.Method == "POST") {
 		r.ParseForm()
@@ -287,7 +301,7 @@ func bytehandler(w http.ResponseWriter, r *http.Request) {
 		log.Println(r.Form.Get("filename"))
 
 		// FIXME: Retrieve file, should just copy request body bytes directy to tensorflow input.
-		err := download(url, "tmpFile.jpg") // Session key would be nice to prepend.
+		jpegBytes, err = downloadBytes(url) // Session key would be nice to prepend.
 		if err != nil {
 			return
 		}
@@ -298,13 +312,13 @@ func bytehandler(w http.ResponseWriter, r *http.Request) {
 	urlClassifyChannel <- struct{}{}
 	defer func() { <-urlClassifyChannel }()
 
-	// Run classifier, which writes to ouptut.jpg
-	runClassifier("tmpFile.jpg", "output.jpg")
+	// Run classifier, which writes to ouptut.jpg. There's no client authentication to make this unique
+	// per client like uuid. But you get a nice jpg pixel fuzzer test on the client.
+	runClassifierBytes(jpegBytes, "output.jpg")
 
 
 	// Open output.
 	var reader io.Reader
-	var err error
 	reader, err = os.Open("output.jpg")
 	b, err := ioutil.ReadAll(reader) // Hmm. Should IO stream it.
 	if (err != nil) {
