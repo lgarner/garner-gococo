@@ -163,10 +163,8 @@ func addLabel(img *image.RGBA, x, y, class int, label string) {
 	d.DrawString(label)
 }
 
-var psession *tf.Session
 var pgraph *tf.Graph
 var outjpg string = "output.jpg"
-
 
 func download(URL, filename string) error {
 	// Not pretty, but we have a self signed cert.
@@ -209,8 +207,7 @@ func downloadBytes(URL string) ([]byte, error) {
 	return b, err
 }
 
-func runClassifierBytes(jpgbytes []byte, outjpg string) {
-	graph := pgraph
+func runClassifierBytes(graph *tf.Graph, jpgbytes []byte, outjpg string) {
 	log.Println("outjpg: ", outjpg)
 	// DecodeJpeg uses a scalar String-valued tensor as input.
 	tensor, i, err := makeTensorFromImageBytes(jpgbytes)
@@ -232,7 +229,13 @@ func runClassifierBytes(jpgbytes []byte, outjpg string) {
 	o4 := graph.Operation("num_detections")
 
 	// Execute COCO Graph
-	output, err := psession.Run(
+	// New tf session:
+	session, err := tf.NewSession(graph, nil)
+	if err != nil {
+		return
+	}
+	defer session.Close()
+	output, err := session.Run(
 		map[tf.Output]*tf.Tensor{
 			inputop.Output(0): tensor,
 		},
@@ -314,7 +317,8 @@ func bytehandler(w http.ResponseWriter, r *http.Request) {
 
 	// Run classifier, which writes to ouptut.jpg. There's no client authentication to make this unique
 	// per client like uuid. But you get a nice jpg pixel fuzzer test on the client.
-	runClassifierBytes(jpegBytes, "output.jpg")
+	// Create a session for inference over graph.
+	runClassifierBytes(pgraph, jpegBytes, "output.jpg")
 
 
 	// Open output.
@@ -406,14 +410,6 @@ func main() {
 	if err := pgraph.Import(model, ""); err != nil {
 		log.Fatal(err)
 	}
-
-	// Create a session for inference over graph.
-	session, err := tf.NewSession(graph, nil)
-	psession = session // Keep a live pointer to reuse.
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer session.Close()
 
 	launchHTTPListeners()
 
