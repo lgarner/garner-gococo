@@ -373,7 +373,6 @@ func main() {
 	// Parse flags
 	var err error
 	modeldir := flag.String("dir", "", "Directory containing COCO trained model files. Assumes model file is called frozen_inference_graph.pb")
-	jpgfile := flag.String("jpg", "", "Path of a JPG image to use for input")
 	labelfile := flag.String("labels", "labels.txt", "Path to file of COCO labels, one per line")
 	maxRequests := flag.String("maxrequests", "100", "Max number of requests")
 	MAX_CLIENTS, err = strconv.Atoi(*maxRequests)
@@ -382,13 +381,15 @@ func main() {
 		return
 	}
 	flag.Parse()
-	if *modeldir == "" || *jpgfile == "" {
+	if *modeldir == "" {
 		flag.Usage()
 		return
 	}
 
 	// Load the labels
 	loadLabels(*labelfile)
+
+	// channel Queue to limit clients blasting CPU/memory.
 	urlClassifyChannel = make(chan struct{}, MAX_CLIENTS)
 
 	// Load a frozen graph to use for queries
@@ -414,7 +415,6 @@ func main() {
 	}
 	defer session.Close()
 
-	//runClassifier(*jpgfile, "output.jpg")
 	launchHTTPListeners()
 
 }
@@ -422,7 +422,7 @@ func main() {
 
 const indexHTML = `<html>
 <head>
-	<title>Hello World</title>
+	<title>Garner's Gococo fork'</title>
 	<script src="/static/app.js"></script>
 	<link rel="stylesheet" href="/static/style.css"">
 </head>
